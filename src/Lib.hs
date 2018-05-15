@@ -10,6 +10,9 @@ import GHC.Generics (Generic)
 import Data.Typeable (Typeable)
 import Data.Binary
 
+import System.Environment (getArgs)
+import Control.Monad (forM, forM_)
+
 import Text.Printf (printf)
 
 import Control.Distributed.Process
@@ -32,20 +35,44 @@ pingServer = do
 
 remotable ['pingServer]
 
-master :: Process () 
-master = do
-    node <- getSelfNode
-    say $ printf "spawning on %s" (show node)
-    pid <- spawn node $(mkStaticClosure 'pingServer)
+master :: Backend -> [NodeId] -> Process () 
+master backend peers = do
+    ps <- forM peers $ \nid -> do
+        say $ printf "spawning on %s" (show nid)
+        spawn nid $(mkStaticClosure 'pingServer)
+
     mypid <- getSelfPid
-    say $ printf "sending ping to %s" (show pid)
-    send pid (Ping mypid)
-    Pong _ <- expect
-    say "pong."
-    terminate
+
+    forM_ ps $ \pid -> do
+        say $ printf "pinging %s" (show pid)
+        send pid (Ping mypid)
+
+    waitForPongs ps
+
+    say "All pongs successfully received"
+    terminateAllSlaves backend
+
+waitForPongs :: [ProcessId] -> Process ()
+waitForPongs [] = return ()
+waitForPongs ps = do
+    m <- expect 
+    case m of
+        Pong p -> waitForPongs (filter (/= p) ps)
+        _ -> say "MASTER received ping" >> terminate
 
 main :: IO ()
-main = do {
-    backend <- initializeBackend "127.0.0.1" "10501" (__remoteTable initRemoteTable);
-    startMaster backend (\_ -> master);
-}
+main = do
+  args <- getArgs
+
+  let defaultArgs = case args of
+        [] -> ["master", "127.0.0.1", "4444"]
+        ["master"] -> ["master", "127.0.0.1", "4444"]
+        ["slave", port] -> ["slave", "127.0.0.1", port]
+
+  case defaultArgs of
+    ["master", host, port] -> do
+      backend <- initializeBackend host port (__remoteTable initRemoteTable)
+      startMaster backend (master backend)
+    ["slave", host, port] -> do
+      backend <- initializeBackend host port (__remoteTable initRemoteTable)
+      startSlave backend
