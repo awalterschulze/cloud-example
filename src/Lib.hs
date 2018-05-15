@@ -48,12 +48,17 @@ master backend peers = do
         send pid (Ping sendport)
         return recvport
 
-    forM_ ports $ \port -> do 
-        _ <- receiveChan port
-        return ()
+    oneport <- mergePortsBiased ports
+    waitForPongs oneport ps
 
     say "All pongs successfully received"
     terminateAllSlaves backend
+
+waitForPongs :: ReceivePort ProcessId -> [ProcessId] -> Process () 
+waitForPongs _ [] = return ()
+waitForPongs port ps = do
+    pid <- receiveChan port
+    waitForPongs port (filter (/= pid) ps)
 
 main :: IO ()
 main = do
