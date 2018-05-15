@@ -20,18 +20,17 @@ import Control.Distributed.Process.Closure
 import Control.Distributed.Process.Node (initRemoteTable)
 import Control.Distributed.Process.Backend.SimpleLocalnet
 
-data Msg = Ping ProcessId
-    | Pong ProcessId
-    deriving (Typeable, Generic) -- instance Binary Msg
+data Msg = Ping (SendPort ProcessId)
+    deriving (Typeable, Generic)
 
 instance Binary Msg
 
 pingServer :: Process () 
 pingServer = do
-    Ping from <- expect
-    say $ printf "ping received from %s" (show from)
+    Ping chan <- expect
+    say $ printf "ping received from %s" (show chan)
     mypid <- getSelfPid
-    send from (Pong mypid)
+    sendChan chan mypid
 
 remotable ['pingServer]
 
@@ -41,24 +40,20 @@ master backend peers = do
         say $ printf "spawning on %s" (show nid)
         spawn nid $(mkStaticClosure 'pingServer)
 
-    mypid <- getSelfPid
+    mapM_ monitor ps
 
-    forM_ ps $ \pid -> do
+    ports <- forM ps $ \pid -> do
         say $ printf "pinging %s" (show pid)
-        send pid (Ping mypid)
+        (sendport,recvport) <- newChan
+        send pid (Ping sendport)
+        return recvport
 
-    waitForPongs ps
+    forM_ ports $ \port -> do 
+        _ <- receiveChan port
+        return ()
 
     say "All pongs successfully received"
     terminateAllSlaves backend
-
-waitForPongs :: [ProcessId] -> Process ()
-waitForPongs [] = return ()
-waitForPongs ps = do
-    m <- expect 
-    case m of
-        Pong p -> waitForPongs (filter (/= p) ps)
-        _ -> say "MASTER received ping" >> terminate
 
 main :: IO ()
 main = do
