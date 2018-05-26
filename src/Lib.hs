@@ -11,54 +11,103 @@ import Data.Typeable (Typeable)
 import Data.Binary
 
 import System.Environment (getArgs)
-import Control.Monad (forM, forM_)
+import Control.Monad (forM, forM_, when)
 
 import Text.Printf (printf)
+import Data.ByteString.Char8 (pack)
 
 import Control.Distributed.Process
+import qualified Network.Transport as NT
 import Control.Distributed.Process.Closure
 import Control.Distributed.Process.Node (initRemoteTable)
 import Control.Distributed.Process.Backend.SimpleLocalnet
 
-data Msg = Ping (SendPort ProcessId)
+type ReplyChan = SendPort ProcessId
+
+data Msg = ReplyMsg {
+        content :: Content
+        , reply :: ReplyChan
+    }
     deriving (Typeable, Generic)
 
+data Content = Init {
+        ps :: [ProcessId]
+    }
+    | Number {
+        num :: Int
+    }
+    deriving (Show, Typeable, Generic)
+
+instance Binary Content
 instance Binary Msg
 
-pingServer :: Process () 
-pingServer = do
-    Ping chan <- expect
-    say $ printf "ping received from %s" (show chan)
-    mypid <- getSelfPid
-    sendChan chan mypid
+nodes :: [NodeId]
+nodes = map (NodeId . NT.EndPointAddress . pack) ["127.0.0.1:4445:0", "127.0.0.1:4446:0"]
 
-remotable ['pingServer]
+isLeader :: Int -> [ProcessId] -> ProcessId -> Bool
+isLeader n ps p = p == (ps !! n)
+
+getLeader :: Int -> [ProcessId] -> (ProcessId, [ProcessId])
+getLeader n ps = let (h, t) = splitAt n ps
+    in (head t, h ++ tail t)
+
+sendToAll :: Content -> [ProcessId] -> Process [ReceivePort ProcessId]
+sendToAll msg ps = forM ps $ \pid -> do
+    (sendport,recvport) <- newChan
+    send pid (ReplyMsg msg sendport)
+    return recvport
+
+waitForAll :: ReceivePort ProcessId -> [ProcessId] -> Process () 
+waitForAll _ [] = return ()
+waitForAll port ps = do
+    pid <- receiveChan port
+    waitForAll port (filter (/= pid) ps)
+
+sendAndWait :: Content -> [ProcessId] -> Process ()
+sendAndWait msg ps = do
+    say $ printf "sending %s to all %s" (show msg) (show ps)
+    ports <- sendToAll msg ps
+    oneport <- mergePortsBiased ports
+    waitForAll oneport ps
+
+numberNode :: Process () 
+numberNode = do
+    ReplyMsg (Init ps) doneChan <- expect
+    mypid <- getSelfPid
+    let leader = isLeader 0 ps mypid
+    say $ printf "init I am leader (%s)" (show leader)
+    sendChan doneChan mypid
+    when leader $ do
+        say "leader sending new message"
+        let newNumber = 1 `mod` length ps
+            msg = Number newNumber
+            (leader, followers) = getLeader newNumber ps
+            followersWithoutMe = filter (/= mypid) followers
+        say $ printf "leader: %s, followers: %s, followersWithoutMe" (show leader) (show followers) (show followersWithoutMe)
+        sendAndWait msg followersWithoutMe
+        sendAndWait msg [leader]
+
+remotable ['numberNode]
+
+spawnAll :: [NodeId] -> Process [ProcessId]
+spawnAll peers = forM peers $ \nid -> do
+    say $ printf "spawning on %s" (show nid)
+    spawn nid $(mkStaticClosure 'numberNode)
 
 master :: Backend -> [NodeId] -> Process () 
 master backend peers = do
-    ps <- forM peers $ \nid -> do
-        say $ printf "spawning on %s" (show nid)
-        spawn nid $(mkStaticClosure 'pingServer)
+    ps <- spawnAll peers
 
-    mapM_ monitor ps
+    refs <- mapM_ monitor ps
 
-    ports <- forM ps $ \pid -> do
-        say $ printf "pinging %s" (show pid)
-        (sendport,recvport) <- newChan
-        send pid (Ping sendport)
-        return recvport
-
-    oneport <- mergePortsBiased ports
-    waitForPongs oneport ps
+    let msg = Init ps
+        (leader, followers) = getLeader 0 ps
+    say $ printf "leader: %s, followers: %s" (show leader) (show followers)
+    sendAndWait msg followers
+    sendAndWait msg [leader]
 
     say "All pongs successfully received"
     terminateAllSlaves backend
-
-waitForPongs :: ReceivePort ProcessId -> [ProcessId] -> Process () 
-waitForPongs _ [] = return ()
-waitForPongs port ps = do
-    pid <- receiveChan port
-    waitForPongs port (filter (/= pid) ps)
 
 main :: IO ()
 main = do

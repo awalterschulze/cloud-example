@@ -24,6 +24,8 @@ dependencies:
 - binary
 - distributed-process-simplelocalnet
 - distributed-process
+- network-transport
+- bytestring
 
 library:
   source-dirs: src

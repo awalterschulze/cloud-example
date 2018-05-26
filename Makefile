@@ -12,6 +12,7 @@ test-trace:
 run: build
 	stack exec iohk-interview-exe slave 4445 &
 	stack exec iohk-interview-exe slave 4446 &
+	stack exec iohk-interview-exe slave 4447 &
 	stack exec iohk-interview-exe
 
 setup:
