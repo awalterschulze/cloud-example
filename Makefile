@@ -15,6 +15,9 @@ run: build
 	stack exec iohk-interview-exe slave 4447 &
 	stack exec iohk-interview-exe
 
+stop:
+	pkill iohk-interview-exe
+
 setup:
 	stack setup
 
