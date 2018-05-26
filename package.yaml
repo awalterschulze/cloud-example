@@ -26,6 +26,8 @@ dependencies:
 - distributed-process
 - network-transport
 - bytestring
+- optparse-applicative
+
 
 library:
   source-dirs: src

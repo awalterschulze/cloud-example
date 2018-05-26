@@ -10,10 +10,10 @@ test-trace:
 	stack test --trace
 
 run: build
-	stack exec iohk-interview-exe slave 4445 &
-	stack exec iohk-interview-exe slave 4446 &
-	stack exec iohk-interview-exe slave 4447 &
-	stack exec iohk-interview-exe
+	stack exec iohk-interview-exe -- --send-for 1 --wait-for 1 --port 4445 &
+	stack exec iohk-interview-exe -- --send-for 1 --wait-for 1 --port 4446 &
+	stack exec iohk-interview-exe -- --send-for 1 --wait-for 1 --port 4447 &
+	stack exec iohk-interview-exe -- --master --send-for 1 --wait-for 1
 
 stop:
 	pkill iohk-interview-exe

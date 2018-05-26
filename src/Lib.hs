@@ -3,7 +3,8 @@
 {-# LANGUAGE TemplateHaskell #-}
 
 module Lib
-    ( main
+    ( remoteTable
+    , master
     ) where
 
 import GHC.Generics (Generic)
@@ -20,7 +21,7 @@ import Control.Distributed.Process
 import Control.Concurrent (threadDelay)
 import qualified Network.Transport as NT
 import Control.Distributed.Process.Closure
-import Control.Distributed.Process.Node (initRemoteTable)
+
 import Control.Distributed.Process.Backend.SimpleLocalnet
 
 type ReplyChan = SendPort ProcessId
@@ -146,13 +147,16 @@ propogateNumber ps n = do
 
 remotable ['initNumberNode]
 
+remoteTable :: RemoteTable -> RemoteTable
+remoteTable = __remoteTable
+
 spawnAll :: [NodeId] -> Process [ProcessId]
 spawnAll peers = forM peers $ \nid -> do
     say $ printf "spawning on %s" (show nid)
     spawn nid $(mkStaticClosure 'initNumberNode)
 
-master :: Backend -> [NodeId] -> Process () 
-master backend peers = do
+master :: Backend -> Int -> Int -> Int -> [NodeId] -> Process () 
+master backend sendFor waitFor seed peers = do
     ps <- spawnAll peers
 
     refs <- mapM_ monitor ps
@@ -168,22 +172,7 @@ master backend peers = do
     say "master is starting shutdown"
     sendAndWait DoneFromMaster ps
 
-    say "All pongs successfully received"
+    say "successful shutdown"
     terminateAllSlaves backend
 
-main :: IO ()
-main = do
-  args <- getArgs
 
-  let defaultArgs = case args of
-        [] -> ["master", "127.0.0.1", "4444"]
-        ["master"] -> ["master", "127.0.0.1", "4444"]
-        ["slave", port] -> ["slave", "127.0.0.1", port]
-
-  case defaultArgs of
-    ["master", host, port] -> do
-      backend <- initializeBackend host port (__remoteTable initRemoteTable)
-      startMaster backend (master backend)
-    ["slave", host, port] -> do
-      backend <- initializeBackend host port (__remoteTable initRemoteTable)
-      startSlave backend
