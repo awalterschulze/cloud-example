@@ -22,8 +22,8 @@ import System.Random (random, mkStdGen, RandomGen, randoms, StdGen)
 
 import Control.Distributed.Process (
     ProcessId, SendPort, ReceivePort, Process, RemoteTable, NodeId
-    , say, send, newChan, receiveChan, sendChan, mergePortsBiased, expect, getSelfPid, spawn, monitor, liftIO)
-import Control.Concurrent (threadDelay)
+    , say, send, newChan, receiveChan, sendChan, mergePortsBiased, expect, getSelfPid, spawn, monitor, liftIO, spawnLocal)
+import Control.Concurrent (threadDelay, newEmptyMVar, putMVar, forkIO)
 import Control.Distributed.Process.Closure (mkClosure, remotable)
 import Control.Distributed.Process.Backend.SimpleLocalnet (Backend, terminateAllSlaves)
 
@@ -67,7 +67,9 @@ toIndex ps d = truncate $ d * fromIntegral (length ps)
 isLeader :: Double -> [ProcessId] -> Process Bool
 isLeader n ps = do
     self <- getSelfPid
-    return $ self == ps !! toIndex ps n
+    let l = self == ps !! toIndex ps n
+    say $ printf "leader = %s" (show l)
+    return l
 
 -- | selectLeader returns the leader by removing it from the list and returning both the leader and the rest of the list.
 selectLeader :: (Eq a) => Double -> [a] -> (a, [a])
@@ -82,12 +84,21 @@ sendToAll msg ps = forM ps $ \pid -> do
     send pid (AckMsg msg sendport)
     return recvport
 
+-- | waitForAll waits to receive an ack from each process, but stops immediately if the process it receives an ack from is itself.
+-- This allows us to short circuit the wait loop, by sending a message from ourselves.
 waitForAll :: ReceivePort (ProcessId, [Double]) -> [ProcessId] -> Process [[Double]] 
-waitForAll _ [] = return []
+waitForAll _ [] = do
+    say "all acks received"
+    return []
 waitForAll port ps = do
     (pid, rs) <- receiveChan port
-    rss <- waitForAll port (filter (/= pid) ps)
-    return (rs:rss)
+    self <- getSelfPid
+    if pid == self
+        then do
+            say "short circuited acks"
+            return []
+        else do rss <- waitForAll port (filter (/= pid) ps)
+                return (rs:rss)
 
 -- | sendAndWait sends content to all processes (excluding self) and waits for acks
 sendAndWait :: Content -> [ProcessId] -> Process [[Double]]
@@ -119,11 +130,11 @@ rand r@(RandomProcess ps self g) =
 initNumberNode :: Int -> Process ()
 initNumberNode seed = do
     AckMsg msg@(Init ps) okChan <- expect
+    say $ printf "message received: <- %s" (show msg)
     ack okChan []
     leader <- isLeader 0 ps
-    say $ printf "message received: <- %s, leader=%s" (show msg) (show leader)
     g <- newRandomProcess ps seed
-    if leader then do 
+    if leader then do
         let (r, g') = rand g
         propogateNumber ps r
         numberNode [r] g' (Shutdown Nothing Nothing) ps
@@ -137,7 +148,6 @@ numberNode rs g shutdown ps = do
         (Number thisr) -> do 
             leader <- isLeader thisr ps
             let newrs = thisr:rs
-            say $ printf "leader = %s" (show leader)
             ack ackChan []
             if leader
             then case masterChan shutdown of
@@ -193,10 +203,11 @@ spawnAll peers = forM peers $ \(seed, nid) -> do
 
 master :: (RandomGen g) => Backend -> Int -> Int -> g -> [NodeId] -> Process ()
 master _ _ _ _ [] = return ()
+master _ _ _ _ [p] = return ()
 master backend sendFor waitFor r peers = do
 
-    let sendForSeconds = sendFor * 1000 * 1000
-        waitForSecodds = waitFor * 1000 * 1000
+    let sendForSecs = sendFor * 1000 * 1000
+        waitForSecs = waitFor * 1000 * 1000
         seeds = take (length peers) $ randoms r
         seeded = zip seeds (sort peers)
 
@@ -211,13 +222,23 @@ master backend sendFor waitFor r peers = do
     sendAndWait msg [leader]
 
     say "master: init complete"
-    liftIO $ threadDelay sendForSeconds
+    liftIO $ threadDelay sendForSecs
 
     say "master: starting shutdown"
-    rs <- sendAndWait DoneFromMaster ps
+    resChan <- sendToAll DoneFromMaster ps
+    (sendCancel, recvCancel) <- newChan
 
-    say "master: successful shutdown"
+    spawnLocal $ do
+        liftIO $ threadDelay waitForSecs
+        say "master: canceling shutdown"
+        ack sendCancel []
+
+    oneResChan <- mergePortsBiased (recvCancel:resChan)
+    rs <- waitForAll oneResChan ps
+
     terminateAllSlaves backend
 
     when (length rs /= length ps) $ error "did not recceive all results"
     when (any (/= head rs) rs) $ error "not all results are equal"
+
+    say "master: successful shutdown"

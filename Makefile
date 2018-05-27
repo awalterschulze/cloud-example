@@ -10,7 +10,7 @@ run: build
 	stack exec cloud-example-exe -- --port 4445 &
 	stack exec cloud-example-exe -- --port 4446 &
 	stack exec cloud-example-exe -- --port 4447 &
-	stack exec cloud-example-exe -- --master --send-for 10 --wait-for 30 --with-seed 123 --discover
+	stack exec cloud-example-exe -- --master --send-for 1 --wait-for 1 --with-seed 123 --discover
 
 stop:
 	pkill cloud-example-exe || true

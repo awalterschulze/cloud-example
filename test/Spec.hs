@@ -26,10 +26,9 @@ main = T.defaultMain $ T.testGroup "Example" [
             , HUnit.testCase "4 with number 0.99" $ HUnit.assertEqual "" (4, [1,2,3]) (Exercise.selectLeader 0.99 [1,2,3,4])
         ]
         , T.testGroup "full program" [
-            -- HUnit.testCase "1 node" $ run ["127.0.0.1:4444:0"]
-            HUnit.testCase "3 nodes" $ run "4443" (replicate 3 "127.0.0.1:4443:0")
-            , HUnit.testCase "2 nodes" $ run "4442" (replicate 2 "127.0.0.1:4442:0")
-
+            HUnit.testCase "2 nodes" $ run "4442" (replicate 2 "127.0.0.1:4442:0")
+            , HUnit.testCase "3 nodes" $ run "4443" (replicate 3 "127.0.0.1:4443:0")
+            , HUnit.testCase "10 nodes" $ run "4440" (replicate 10 "127.0.0.1:4440:0")
         ]
     ]
 
@@ -38,4 +37,4 @@ run port addrs = do
     backend <- initializeBackend "127.0.0.1" port (Exercise.remoteTable initRemoteTable)
     let r = mkStdGen 0
         nodes = map (NodeId . EndPointAddress . pack) addrs
-    startMaster backend (\_ -> Exercise.master backend 1 1 r nodes)
+    startMaster backend (\_ -> Exercise.master backend 1 10 r nodes)
