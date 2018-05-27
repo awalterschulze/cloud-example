@@ -13,7 +13,7 @@ import Data.Typeable (Typeable)
 import Data.Binary (Binary)
 
 import Data.List (sort)
-import Control.Monad (forM)
+import Control.Monad (forM, when)
 import Text.Printf (printf)
 import System.Random (random, mkStdGen, StdGen, randoms)
 
@@ -24,7 +24,7 @@ import Control.Concurrent (threadDelay)
 import Control.Distributed.Process.Closure (mkClosure, remotable)
 import Control.Distributed.Process.Backend.SimpleLocalnet (Backend, terminateAllSlaves)
 
-type ReplyChan = SendPort ProcessId
+type ReplyChan = SendPort (ProcessId, [Double])
 
 data Msg = ReplyMsg {
         content :: Content
@@ -71,19 +71,20 @@ selectLeader n ps =
         (h, t) = splitAt index ps
     in (head t, h ++ tail t)
 
-sendToAll :: Content -> [ProcessId] -> Process [ReceivePort ProcessId]
+sendToAll :: Content -> [ProcessId] -> Process [ReceivePort (ProcessId, [Double])]
 sendToAll msg ps = forM ps $ \pid -> do
     (sendport,recvport) <- newChan
     send pid (ReplyMsg msg sendport)
     return recvport
 
-waitForAll :: ReceivePort ProcessId -> [ProcessId] -> Process () 
-waitForAll _ [] = return ()
+waitForAll :: ReceivePort (ProcessId, [Double]) -> [ProcessId] -> Process [[Double]] 
+waitForAll _ [] = return []
 waitForAll port ps = do
-    pid <- receiveChan port
-    waitForAll port (filter (/= pid) ps)
+    (pid, rs) <- receiveChan port
+    rss <- waitForAll port (filter (/= pid) ps)
+    return (rs:rss)
 
-sendAndWait :: Content -> [ProcessId] -> Process ()
+sendAndWait :: Content -> [ProcessId] -> Process [[Double]]
 sendAndWait msg ps = do
     say $ printf "sending %s to all %s" (show msg) (show ps)
     ports <- sendToAll msg ps
@@ -106,7 +107,7 @@ initNumberNode seed = do
     let leader = isLeader 0 ps p
         g = mkStdGen seed
     say $ printf "message received: %s <- %s, leader=%s" (show p) (show msg) (show leader)
-    sendChan okChan p
+    sendChan okChan (p, [])
     if leader
         then do 
             let (r, g') = rand ps p g
@@ -123,7 +124,7 @@ numberNode rs g shutdown ps = do
         (Number r) -> do 
             let leader = isLeader r ps p
             say $ printf "%s, leader = %s" (show p) (show leader)
-            sendChan okChan p
+            sendChan okChan (p, [])
             if leader
             then case masterChan shutdown of
                 Nothing -> do
@@ -135,7 +136,7 @@ numberNode rs g shutdown ps = do
                     sendAndWait DoneFromLeader (filter (/= p) ps)
                     say $ printf "result: %s" (show $ result (r:rs))
                     say $ printf "shutting down: %s" (show p)
-                    sendChan s p
+                    sendChan s (p, (r:rs))
             else numberNode (r:rs) g shutdown ps
         DoneFromMaster -> nodeShutdown rs g (setMasterChan shutdown okChan) ps
         DoneFromLeader -> nodeShutdown rs g (setLeaderChan shutdown okChan) ps
@@ -151,8 +152,8 @@ nodeShutdown rs g shutdown ps = do
         (Shutdown (Just m) (Just l)) -> do
             say $ printf "result: %s" (show $ result rs)
             say $ printf "shutting down: %s" (show mypid)
-            sendChan l mypid
-            sendChan m mypid
+            sendChan l (mypid, [])
+            sendChan m (mypid, rs)
         _ -> numberNode rs g shutdown ps
 
 propogateNumber :: [ProcessId] -> Double -> Process ()
@@ -164,6 +165,7 @@ propogateNumber ps r = do
     say $ printf "sending message: %s -(%s)> %s" (show leader) (show msg) (show followersWithoutMe)
     sendAndWait msg followersWithoutMe
     sendAndWait msg [leader]
+    return ()
 
 remotable ['initNumberNode]
 
@@ -175,7 +177,7 @@ spawnAll peers = forM peers $ \(seed, nid) -> do
     say $ printf "spawning on %s" (show nid)
     spawn nid $ $(mkClosure 'initNumberNode) seed
 
-master :: Backend -> Int -> Int -> StdGen -> [NodeId] -> Process () 
+master :: Backend -> Int -> Int -> StdGen -> [NodeId] -> Process ()
 master backend sendFor waitFor r peers = do
     let sendForSeconds = sendFor * 1000 * 1000
         waitForSecodds = waitFor * 1000 * 1000
@@ -196,7 +198,9 @@ master backend sendFor waitFor r peers = do
     liftIO $ threadDelay sendForSeconds
 
     say "master: starting shutdown"
-    sendAndWait DoneFromMaster ps
+    rs <- sendAndWait DoneFromMaster ps
 
     say "master: successful shutdown"
     terminateAllSlaves backend
+
+    when (length rs > 0 && any (/= head rs) rs) $ error "not all results are equal"

@@ -19,19 +19,13 @@ main = T.defaultMain $ T.testGroup "Example" [
             , HUnit.testCase "result" $ HUnit.assertEqual "empty" (3, 1*0.3 + 2*0.5 + 3*1.2) (Exercise.result [1.2, 0.5, 0.3])
         ]
         , T.testGroup "3 nodes" [
-            HUnit.testCase "run" $ run
+            HUnit.testCase "run" $ run (replicate 3 "127.0.0.1:4444:0")
         ]
     ]
 
-nodes :: [NodeId]
-nodes = map (NodeId . EndPointAddress . pack) [
-    "127.0.0.1:4444:0"
-    , "127.0.0.1:4444:0"
-    , "127.0.0.1:4444:0"
-  ]
-
-run :: IO ()
-run = do
+run :: [String] -> IO ()
+run addrs = do
     backend <- initializeBackend "127.0.0.1" "4444" (Exercise.remoteTable initRemoteTable)
     let r = mkStdGen 0
+        nodes = map (NodeId . EndPointAddress . pack) addrs
     startMaster backend (\_ -> Exercise.master backend 1 1 r nodes)

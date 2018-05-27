@@ -38,13 +38,6 @@ flags = Flags
   <*> strOption
     ( long "port" <> help "host port" <> showDefault <> value "4444")
 
-nodes :: [NodeId]
-nodes = map (NodeId . EndPointAddress . pack) [
-    "127.0.0.1:4445:0"
-    , "127.0.0.1:4446:0"
-    , "127.0.0.1:4447:0"
-  ]
-
 main :: IO ()
 main = do 
   flags <- execParser (info (flags <**> helper) fullDesc)
@@ -52,5 +45,8 @@ main = do
   let r = mkStdGen (seed flags)
   print flags
   if master flags
-    then startMaster backend (\_ -> Exercise.master backend (sendFor flags) (waitFor flags) r nodes)
+    then do
+        let addrs = ["127.0.0.1:4445:0", "127.0.0.1:4446:0", "127.0.0.1:4447:0"]
+            nodes = map (NodeId . EndPointAddress . pack) addrs
+        startMaster backend (\_ -> Exercise.master backend (sendFor flags) (waitFor flags) r nodes)
     else startSlave backend
