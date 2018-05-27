@@ -18,11 +18,22 @@ When a process has received both shutdown signals, it prints out its result and 
 Finally the leader also prints out its result and replies to the master's channel.
 This way clean shutdown with empty message queues is achieved.
 
+The result is a tuple: `(length msgs, sum (imap (\index msg -> index * msg) msgs))`
+
 ## Running
 
 ### Requirements
 
 Please install [stack](https://docs.haskellstack.org/en/stable/README/#how-to-install)
+
+### Testing
+
+Testing allows you to run a full cluster as a unit test:
+
+```
+stack build
+stack test
+```
 
 ### Running slave
 
@@ -49,6 +60,7 @@ The discover flags can be used instead of hard coding the nodes in `./app/Main.h
 ## Problems
 
   - Sleeping with threadDelay is sleeping too long.
+  - Messages always wait for a reply to make sure they arrived at their destination, this could freeze up the whole system.
   - No restart policies with supervision have been added, which should handle issues when nodes or networks give errors.
-  - No timeouts have been used for slow networks.
-  - Not only random numbers are being sent, but there is also an Init message and Shutdown messages.
+  - Not only random numbers are being sent, but there is also an initial message and shutdown messages.
+  - `wait-for` is ignored in favor of clean shutdown and shutdown messages.

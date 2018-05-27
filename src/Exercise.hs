@@ -18,7 +18,7 @@ import Data.Binary (Binary)
 import Data.List (sort)
 import Control.Monad (forM, when)
 import Text.Printf (printf)
-import System.Random (random, mkStdGen, RandomGen, randoms)
+import System.Random (random, mkStdGen, RandomGen, randoms, StdGen)
 
 import Control.Distributed.Process (
     ProcessId, SendPort, ReceivePort, Process, RemoteTable, NodeId
@@ -27,11 +27,11 @@ import Control.Concurrent (threadDelay)
 import Control.Distributed.Process.Closure (mkClosure, remotable)
 import Control.Distributed.Process.Backend.SimpleLocalnet (Backend, terminateAllSlaves)
 
-type ReplyChan = SendPort (ProcessId, [Double])
+type AckChan = SendPort (ProcessId, [Double])
 
-data Msg = ReplyMsg {
+data Msg = AckMsg {
         content :: Content
-        , reply :: ReplyChan
+        , ackChan :: AckChan
     }
     deriving (Typeable, Generic)
 
@@ -49,14 +49,14 @@ instance Binary Content
 instance Binary Msg
 
 data ShutdownState = Shutdown {
-    masterChan :: Maybe ReplyChan
-    , leaderChan :: Maybe ReplyChan
+    masterChan :: Maybe AckChan
+    , leaderChan :: Maybe AckChan
 }
 
-setMasterChan :: ShutdownState -> ReplyChan -> ShutdownState
+setMasterChan :: ShutdownState -> AckChan -> ShutdownState
 setMasterChan (Shutdown _ l) m = Shutdown (Just m) l
 
-setLeaderChan :: ShutdownState -> ReplyChan -> ShutdownState
+setLeaderChan :: ShutdownState -> AckChan -> ShutdownState
 setLeaderChan (Shutdown m _) l = Shutdown m (Just l)
 
 -- | toIndex converts the randomly generated number double [0,1) to an index in the list.
@@ -64,8 +64,10 @@ toIndex :: [a] -> Double -> Int
 toIndex ps d = truncate $ d * fromIntegral (length ps)
 
 -- | isLeader checks whether the random number is accosiated with the given item in the list.
-isLeader :: (Eq a) => Double -> [a] -> a -> Bool
-isLeader n ps p = p == ps !! toIndex ps n
+isLeader :: Double -> [ProcessId] -> Process Bool
+isLeader n ps = do
+    self <- getSelfPid
+    return $ self == ps !! toIndex ps n
 
 -- | selectLeader returns the leader by removing it from the list and returning both the leader and the rest of the list.
 selectLeader :: (Eq a) => Double -> [a] -> (a, [a])
@@ -77,7 +79,7 @@ selectLeader r ps =
 sendToAll :: Content -> [ProcessId] -> Process [ReceivePort (ProcessId, [Double])]
 sendToAll msg ps = forM ps $ \pid -> do
     (sendport,recvport) <- newChan
-    send pid (ReplyMsg msg sendport)
+    send pid (AckMsg msg sendport)
     return recvport
 
 waitForAll :: ReceivePort (ProcessId, [Double]) -> [ProcessId] -> Process [[Double]] 
@@ -87,86 +89,95 @@ waitForAll port ps = do
     rss <- waitForAll port (filter (/= pid) ps)
     return (rs:rss)
 
+-- | sendAndWait sends content to all processes (excluding self) and waits for acks
 sendAndWait :: Content -> [ProcessId] -> Process [[Double]]
+sendAndWait _ [] = return []
 sendAndWait msg ps = do
-    say $ printf "sending %s to all %s" (show msg) (show ps)
-    ports <- sendToAll msg ps
+    self <- getSelfPid
+    let others = filter (/= self) ps
+    say $ printf "sending message: %s -> %s" (show msg) (show others)
+    ports <- sendToAll msg others
     oneport <- mergePortsBiased ports
-    waitForAll oneport ps
+    waitForAll oneport others
+
+data RandomProcess g = RandomProcess [ProcessId] ProcessId g
+
+newRandomProcess :: [ProcessId] -> Int -> Process (RandomProcess StdGen)
+newRandomProcess ps seed = do
+    self <- getSelfPid
+    return $ RandomProcess ps self (mkStdGen seed)
 
 -- | rand randomly generates a random number that won't reselect the current node as the leader.
-rand :: (RandomGen g) => [ProcessId] -> ProcessId -> g -> (Double, g)
-rand ps p g = 
+rand :: (RandomGen g) => RandomProcess g -> (Double, RandomProcess g)
+rand r@(RandomProcess ps self g) = 
     let (r, g') = random g
         index = toIndex ps r
-    in if p == (ps !! index)
-        then rand ps p g'
-        else (r, g')
+    in if self == (ps !! index)
+        then rand (RandomProcess ps self g')
+        else (r, RandomProcess ps self g')
 
-initNumberNode :: Int -> Process () 
+initNumberNode :: Int -> Process ()
 initNumberNode seed = do
-    ReplyMsg msg@(Init ps) okChan <- expect
-    p <- getSelfPid
-    let leader = isLeader 0 ps p
-        g = mkStdGen seed
-    say $ printf "message received: %s <- %s, leader=%s" (show p) (show msg) (show leader)
-    sendChan okChan (p, [])
-    if leader
-        then do 
-            let (r, g') = rand ps p g
-            propogateNumber ps r
-            numberNode [r] g' (Shutdown Nothing Nothing) ps
-        else numberNode [] g (Shutdown Nothing Nothing) ps
+    AckMsg msg@(Init ps) okChan <- expect
+    ack okChan []
+    leader <- isLeader 0 ps
+    say $ printf "message received: <- %s, leader=%s" (show msg) (show leader)
+    g <- newRandomProcess ps seed
+    if leader then do 
+        let (r, g') = rand g
+        propogateNumber ps r
+        numberNode [r] g' (Shutdown Nothing Nothing) ps
+    else numberNode [] g (Shutdown Nothing Nothing) ps
 
-numberNode :: (RandomGen g) => [Double] -> g -> ShutdownState -> [ProcessId] -> Process ()
+numberNode :: (RandomGen g) => [Double] -> RandomProcess g -> ShutdownState -> [ProcessId] -> Process ()
 numberNode rs g shutdown ps = do
-    p <- getSelfPid
-    ReplyMsg msg okChan <- expect
-    say $ printf "message received: %s <- %s" (show p) (show msg)
+    AckMsg msg ackChan <- expect
+    say $ printf "message received: <- %s" (show msg)
     case msg of
-        (Number r) -> do 
-            let leader = isLeader r ps p
-            say $ printf "%s, leader = %s" (show p) (show leader)
-            sendChan okChan (p, [])
+        (Number thisr) -> do 
+            leader <- isLeader thisr ps
+            let newrs = thisr:rs
+            say $ printf "leader = %s" (show leader)
+            ack ackChan []
             if leader
             then case masterChan shutdown of
                 Nothing -> do
-                    let (r', g') = rand ps p g
-                    propogateNumber ps r'
-                    numberNode (r':r:rs) g' shutdown ps
+                    let (newr, g') = rand g
+                    propogateNumber ps newr
+                    numberNode (newr:newrs) g' shutdown ps
                 (Just s) -> do
-                    say $ printf "leader %s is starting shutdown" (show p)
-                    sendAndWait DoneFromLeader (filter (/= p) ps)
-                    say $ printf "result: %s" (show $ result (r:rs))
-                    say $ printf "shutting down: %s" (show p)
-                    sendChan s (p, (r:rs))
-            else numberNode (r:rs) g shutdown ps
-        DoneFromMaster -> nodeShutdown rs g (setMasterChan shutdown okChan) ps
-        DoneFromLeader -> nodeShutdown rs g (setLeaderChan shutdown okChan) ps
+                    say "leader is starting shutdown"
+                    sendAndWait DoneFromLeader ps
+                    say $ printf "result: %s" (show $ result newrs)
+                    say "shutting down"
+                    ack s newrs
+            else numberNode newrs g shutdown ps
+        DoneFromMaster -> nodeShutdown rs g (setMasterChan shutdown ackChan) ps
+        DoneFromLeader -> nodeShutdown rs g (setLeaderChan shutdown ackChan) ps
+
+ack :: AckChan -> [Double] -> Process ()
+ack chan rs = do
+    self <- getSelfPid
+    sendChan chan (self, rs)
 
 -- | result calculates the tuple to be printed out given the reversed list of messages.
 result :: [Double] -> (Int, Double)
 result = foldr (\d (size, sum) -> (size+1, sum + d * fromIntegral (size+1))) (0,0.0)
 
-nodeShutdown :: (RandomGen g) => [Double] -> g -> ShutdownState -> [ProcessId] -> Process ()
-nodeShutdown rs g shutdown ps = do
-    mypid <- getSelfPid
-    case shutdown of
-        (Shutdown (Just m) (Just l)) -> do
-            say $ printf "result: %s" (show $ result rs)
-            say $ printf "shutting down: %s" (show mypid)
-            sendChan l (mypid, [])
-            sendChan m (mypid, rs)
-        _ -> numberNode rs g shutdown ps
+nodeShutdown :: (RandomGen g) => [Double] -> RandomProcess g -> ShutdownState -> [ProcessId] -> Process ()
+nodeShutdown rs g shutdown ps = case shutdown of
+    (Shutdown (Just m) (Just l)) -> do
+        say $ printf "result: %s" (show $ result rs)
+        say "shutting down"
+        ack l []
+        ack m rs
+    _ -> numberNode rs g shutdown ps
 
 propogateNumber :: [ProcessId] -> Double -> Process ()
 propogateNumber ps r = do
-    mypid <- getSelfPid
     let msg = Number r
         (leader, followers) = selectLeader r ps
-        followersWithoutMe = filter (/= mypid) followers
-    say $ printf "sending message: %s -(%s)> %s" (show leader) (show msg) (show followersWithoutMe)
-    sendAndWait msg followersWithoutMe
+    sendAndWait msg followers
     sendAndWait msg [leader]
     return ()
 
