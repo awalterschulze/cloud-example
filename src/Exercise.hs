@@ -10,23 +10,19 @@ module Exercise
 
 import GHC.Generics (Generic)
 import Data.Typeable (Typeable)
-import Data.Binary
+import Data.Binary (Binary)
+
 import Data.List (sort)
-import System.IO (stdout, hFlush)
-
-import System.Environment (getArgs)
-import Control.Monad (forM, forM_, when)
-
+import Control.Monad (forM)
 import Text.Printf (printf)
-import Data.ByteString.Char8 (pack)
+import System.Random (random, mkStdGen, StdGen, randoms)
 
-import System.Random (RandomGen, random, mkStdGen, StdGen, randoms)
-import Control.Distributed.Process
+import Control.Distributed.Process (
+    ProcessId, SendPort, ReceivePort, Process, RemoteTable, NodeId
+    , say, send, newChan, receiveChan, sendChan, mergePortsBiased, expect, getSelfPid, spawn, monitor, liftIO)
 import Control.Concurrent (threadDelay)
-import qualified Network.Transport as NT
-import Control.Distributed.Process.Closure
-
-import Control.Distributed.Process.Backend.SimpleLocalnet
+import Control.Distributed.Process.Closure (mkClosure, remotable)
+import Control.Distributed.Process.Backend.SimpleLocalnet (Backend, terminateAllSlaves)
 
 type ReplyChan = SendPort ProcessId
 
@@ -59,9 +55,6 @@ setMasterChan (Shutdown _ l) m = Shutdown (Just m) l
 
 setLeaderChan :: ShutdownState -> ReplyChan -> ShutdownState
 setLeaderChan (Shutdown m _) l = Shutdown m (Just l)
-
-nodes :: [NodeId]
-nodes = map (NodeId . NT.EndPointAddress . pack) ["127.0.0.1:4445:0", "127.0.0.1:4446:0"]
 
 -- toIndex converts the randomly generated number double [0,1) to an index in the list.
 toIndex :: [a] -> Double -> Int
