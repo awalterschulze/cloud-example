@@ -3,11 +3,8 @@
 build:
 	stack build
 
-test: 
+test: build
 	stack test
-
-test-trace:
-	stack test --trace
 
 run: build
 	stack exec iohk-interview-exe -- --send-for 1 --wait-for 1 --port 4445 &

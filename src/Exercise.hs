@@ -2,15 +2,17 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE TemplateHaskell #-}
 
-module Lib
+module Exercise
     ( remoteTable
     , master
+    , result
     ) where
 
 import GHC.Generics (Generic)
 import Data.Typeable (Typeable)
 import Data.Binary
 import Data.List (sort)
+import System.IO (stdout, hFlush)
 
 import System.Environment (getArgs)
 import Control.Monad (forM, forM_, when)
@@ -116,12 +118,11 @@ initNumberNode seed = do
         then do 
             let (r, g') = rand ps p g
             propogateNumber ps r
-            numberNode g' (Shutdown Nothing Nothing) ps
-        else numberNode g (Shutdown Nothing Nothing) ps
-    
+            numberNode [r] g' (Shutdown Nothing Nothing) ps
+        else numberNode [] g (Shutdown Nothing Nothing) ps
 
-numberNode :: StdGen -> ShutdownState -> [ProcessId] -> Process ()
-numberNode g shutdown ps = do
+numberNode :: [Double] -> StdGen -> ShutdownState -> [ProcessId] -> Process ()
+numberNode rs g shutdown ps = do
     p <- getSelfPid
     ReplyMsg msg okChan <- expect
     say $ printf "message received: %s <- %s" (show p) (show msg)
@@ -133,27 +134,33 @@ numberNode g shutdown ps = do
             if leader
             then case masterChan shutdown of
                 Nothing -> do
-                    let (r, g') = rand ps p g
-                    propogateNumber ps r
-                    numberNode g' shutdown ps
+                    let (r', g') = rand ps p g
+                    propogateNumber ps r'
+                    numberNode (r':r:rs) g' shutdown ps
                 (Just s) -> do
-                    sendChan s p
                     say $ printf "leader %s is starting shutdown" (show p)
-                    sendAndWait DoneFromLeader ps
-                    say $ printf "leader %s is done" (show p)
-            else numberNode g shutdown ps
-        DoneFromMaster -> nodeShutdown g (setMasterChan shutdown okChan) ps
-        DoneFromLeader -> nodeShutdown g (setLeaderChan shutdown okChan) ps
+                    sendAndWait DoneFromLeader (filter (/= p) ps)
+                    say $ printf "result: %s" (show $ result (r:rs))
+                    say $ printf "shutting down: %s" (show p)
+                    sendChan s p
+            else numberNode (r:rs) g shutdown ps
+        DoneFromMaster -> nodeShutdown rs g (setMasterChan shutdown okChan) ps
+        DoneFromLeader -> nodeShutdown rs g (setLeaderChan shutdown okChan) ps
 
-nodeShutdown :: StdGen -> ShutdownState -> [ProcessId] -> Process ()
-nodeShutdown g shutdown ps = do
+-- result calculates the tuple to be printed out given the reversed list of messages.
+result :: [Double] -> (Int, Double)
+result = foldr (\d (size, sum) -> (size+1, sum + d * fromIntegral (size+1))) (0,0.0)
+
+nodeShutdown :: [Double] -> StdGen -> ShutdownState -> [ProcessId] -> Process ()
+nodeShutdown rs g shutdown ps = do
     mypid <- getSelfPid
     case shutdown of
         (Shutdown (Just m) (Just l)) -> do
+            say $ printf "result: %s" (show $ result rs)
             say $ printf "shutting down: %s" (show mypid)
             sendChan l mypid
             sendChan m mypid
-        _ -> numberNode g shutdown ps
+        _ -> numberNode rs g shutdown ps
 
 propogateNumber :: [ProcessId] -> Double -> Process ()
 propogateNumber ps r = do

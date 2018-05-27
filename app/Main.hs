@@ -1,6 +1,6 @@
 module Main where
 
-import qualified Lib
+import qualified Exercise
 
 import Options.Applicative
 import Data.Semigroup ((<>))
@@ -55,9 +55,9 @@ flags = Flags
 main :: IO ()
 main = do 
   flags <- execParser (info (flags <**> helper) fullDesc)
-  backend <- initializeBackend (host flags) (port flags) (Lib.remoteTable initRemoteTable)
+  backend <- initializeBackend (host flags) (port flags) (Exercise.remoteTable initRemoteTable)
   let r = mkStdGen (seed flags)
   print flags
   if master flags
-    then startMaster backend (Lib.master backend (sendFor flags) (waitFor flags) r)
+    then startMaster backend (Exercise.master backend (sendFor flags) (waitFor flags) r)
     else startSlave backend

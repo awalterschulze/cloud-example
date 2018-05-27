@@ -28,6 +28,8 @@ dependencies:
 - bytestring
 - optparse-applicative
 - random
+- tasty
+- tasty-hunit
 
 
 library:
