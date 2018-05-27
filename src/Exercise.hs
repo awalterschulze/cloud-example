@@ -5,7 +5,10 @@
 module Exercise
     ( remoteTable
     , master
+    -- * Internal functions
+    -- | These functions are exposed for testing purposes.
     , result
+    , selectLeader
     ) where
 
 import GHC.Generics (Generic)
@@ -15,7 +18,7 @@ import Data.Binary (Binary)
 import Data.List (sort)
 import Control.Monad (forM, when)
 import Text.Printf (printf)
-import System.Random (random, mkStdGen, StdGen, randoms)
+import System.Random (random, mkStdGen, RandomGen, randoms)
 
 import Control.Distributed.Process (
     ProcessId, SendPort, ReceivePort, Process, RemoteTable, NodeId
@@ -56,18 +59,18 @@ setMasterChan (Shutdown _ l) m = Shutdown (Just m) l
 setLeaderChan :: ShutdownState -> ReplyChan -> ShutdownState
 setLeaderChan (Shutdown m _) l = Shutdown m (Just l)
 
--- toIndex converts the randomly generated number double [0,1) to an index in the list.
+-- | toIndex converts the randomly generated number double [0,1) to an index in the list.
 toIndex :: [a] -> Double -> Int
 toIndex ps d = truncate $ d * fromIntegral (length ps)
 
--- isLeader checks whether the random number is accosiated with the given item in the list.
+-- | isLeader checks whether the random number is accosiated with the given item in the list.
 isLeader :: (Eq a) => Double -> [a] -> a -> Bool
 isLeader n ps p = p == ps !! toIndex ps n
 
--- selectLeader returns the leader by removing it from the list and returning both the leader and the rest of the list.
+-- | selectLeader returns the leader by removing it from the list and returning both the leader and the rest of the list.
 selectLeader :: (Eq a) => Double -> [a] -> (a, [a])
-selectLeader n ps = 
-    let index = toIndex ps n
+selectLeader r ps = 
+    let index = toIndex ps r
         (h, t) = splitAt index ps
     in (head t, h ++ tail t)
 
@@ -91,8 +94,8 @@ sendAndWait msg ps = do
     oneport <- mergePortsBiased ports
     waitForAll oneport ps
 
--- rand randomly generates a random number that won't reselect the current node as the leader.
-rand :: [ProcessId] -> ProcessId -> StdGen -> (Double, StdGen)
+-- | rand randomly generates a random number that won't reselect the current node as the leader.
+rand :: (RandomGen g) => [ProcessId] -> ProcessId -> g -> (Double, g)
 rand ps p g = 
     let (r, g') = random g
         index = toIndex ps r
@@ -115,7 +118,7 @@ initNumberNode seed = do
             numberNode [r] g' (Shutdown Nothing Nothing) ps
         else numberNode [] g (Shutdown Nothing Nothing) ps
 
-numberNode :: [Double] -> StdGen -> ShutdownState -> [ProcessId] -> Process ()
+numberNode :: (RandomGen g) => [Double] -> g -> ShutdownState -> [ProcessId] -> Process ()
 numberNode rs g shutdown ps = do
     p <- getSelfPid
     ReplyMsg msg okChan <- expect
@@ -141,11 +144,11 @@ numberNode rs g shutdown ps = do
         DoneFromMaster -> nodeShutdown rs g (setMasterChan shutdown okChan) ps
         DoneFromLeader -> nodeShutdown rs g (setLeaderChan shutdown okChan) ps
 
--- result calculates the tuple to be printed out given the reversed list of messages.
+-- | result calculates the tuple to be printed out given the reversed list of messages.
 result :: [Double] -> (Int, Double)
 result = foldr (\d (size, sum) -> (size+1, sum + d * fromIntegral (size+1))) (0,0.0)
 
-nodeShutdown :: [Double] -> StdGen -> ShutdownState -> [ProcessId] -> Process ()
+nodeShutdown :: (RandomGen g) => [Double] -> g -> ShutdownState -> [ProcessId] -> Process ()
 nodeShutdown rs g shutdown ps = do
     mypid <- getSelfPid
     case shutdown of
@@ -177,8 +180,10 @@ spawnAll peers = forM peers $ \(seed, nid) -> do
     say $ printf "spawning on %s" (show nid)
     spawn nid $ $(mkClosure 'initNumberNode) seed
 
-master :: Backend -> Int -> Int -> StdGen -> [NodeId] -> Process ()
+master :: (RandomGen g) => Backend -> Int -> Int -> g -> [NodeId] -> Process ()
+master _ _ _ _ [] = return ()
 master backend sendFor waitFor r peers = do
+
     let sendForSeconds = sendFor * 1000 * 1000
         waitForSecodds = waitFor * 1000 * 1000
         seeds = take (length peers) $ randoms r
@@ -203,4 +208,5 @@ master backend sendFor waitFor r peers = do
     say "master: successful shutdown"
     terminateAllSlaves backend
 
-    when (length rs > 0 && any (/= head rs) rs) $ error "not all results are equal"
+    when (length rs /= length ps) $ error "did not recceive all results"
+    when (any (/= head rs) rs) $ error "not all results are equal"

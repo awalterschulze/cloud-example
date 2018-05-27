@@ -15,11 +15,18 @@ import Control.Distributed.Process.Backend.SimpleLocalnet (initializeBackend, st
 main :: IO ()
 main = T.defaultMain $ T.testGroup "Example" [
         T.testGroup "result" [
-            HUnit.testCase "result" $ HUnit.assertEqual "empty" (0, 0.0) (Exercise.result [])
-            , HUnit.testCase "result" $ HUnit.assertEqual "empty" (3, 1*0.3 + 2*0.5 + 3*1.2) (Exercise.result [1.2, 0.5, 0.3])
+            HUnit.testCase "empty" $ HUnit.assertEqual "" (0, 0.0) (Exercise.result [])
+            , HUnit.testCase "three items" $ HUnit.assertEqual "" (3, 1*0.3 + 2*0.5 + 3*1.2) (Exercise.result [1.2, 0.5, 0.3])
         ]
-        , T.testGroup "3 nodes" [
-            HUnit.testCase "run" $ run (replicate 3 "127.0.0.1:4444:0")
+        , T.testGroup "select leader" [
+            HUnit.testCase "2" $ HUnit.assertEqual "" (1, [2]) (Exercise.selectLeader 0 [1,2])
+            , HUnit.testCase "1" $ HUnit.assertEqual "" (1, []) (Exercise.selectLeader 0 [1])
+            , HUnit.testCase "4" $ HUnit.assertEqual "" (1, [2,3,4]) (Exercise.selectLeader 0 [1,2,3,4])
+            , HUnit.testCase "4 with number 0.33" $ HUnit.assertEqual "" (2, [1,3,4]) (Exercise.selectLeader 0.33 [1,2,3,4])
+            , HUnit.testCase "4 with number 0.99" $ HUnit.assertEqual "" (4, [1,2,3]) (Exercise.selectLeader 0.99 [1,2,3,4])
+        ]
+        , T.testGroup "full program" [
+            HUnit.testCase "3 nodes" $ run (replicate 3 "127.0.0.1:4444:0")
         ]
     ]
 

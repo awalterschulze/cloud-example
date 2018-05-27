@@ -20,15 +20,16 @@ data Flags = Flags
     , master     :: Bool
     , host       :: String
     , port       :: String
+    , discover   :: Bool
     }
   deriving (Show)
 
 flags :: Parser Flags
 flags = Flags
   <$> option auto
-    ( long "send-for" <> help "denotes how many seconds does the system send messages" <> metavar "SECONDS")
+    ( long "send-for" <> help "denotes how many seconds does the system send messages" <> showDefault <> value 1 <> metavar "SECONDS")
   <*> option auto
-    ( long "wait-for" <> help "denotes the length of the grace period in seconds" <> metavar "SECONDS")
+    ( long "wait-for" <> help "denotes the length of the grace period in seconds" <> showDefault <> value 10 <> metavar "SECONDS")
   <*> option auto
     ( long "with-seed" <> help "How enthusiastically to greet" <> showDefault <> value 1 <> metavar "INT")
   <*> switch
@@ -37,16 +38,23 @@ flags = Flags
     ( long "host" <> help "host address" <> showDefault <> value "127.0.0.1")
   <*> strOption
     ( long "port" <> help "host port" <> showDefault <> value "4444")
+  <*> switch
+    ( long "discover" <> help "discover nodes rather than hard coding them" )
+
+-- | hardcodedAddrs can be modified to reflect the slaves that have been started up
+hardcodedAddrs :: [String]
+hardcodedAddrs = ["127.0.0.1:4445:0", "127.0.0.1:4446:0", "127.0.0.1:4447:0"]
 
 main :: IO ()
 main = do 
   flags <- execParser (info (flags <**> helper) fullDesc)
   backend <- initializeBackend (host flags) (port flags) (Exercise.remoteTable initRemoteTable)
-  let r = mkStdGen (seed flags)
   print flags
   if master flags
-    then do
-        let addrs = ["127.0.0.1:4445:0", "127.0.0.1:4446:0", "127.0.0.1:4447:0"]
-            nodes = map (NodeId . EndPointAddress . pack) addrs
-        startMaster backend (\_ -> Exercise.master backend (sendFor flags) (waitFor flags) r nodes)
+    then startMaster backend (\discoveredNodes -> 
+          Exercise.master backend
+          (sendFor flags)
+          (waitFor flags)
+          (mkStdGen (seed flags)) 
+          (if discover flags then discoveredNodes else map (NodeId . EndPointAddress . pack) hardcodedAddrs))
     else startSlave backend
