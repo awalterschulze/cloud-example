@@ -46,3 +46,9 @@ This master with tell all slaves to send messages for 10 seconds and then wait f
 The seed allows the random numbers to be pseudo randomly generated.
 The discover flags can be used instead of hard coding the nodes in `./app/Main.hs` in the `hardcodedAddrs` function.
 
+## Problems
+
+  - Sleeping with threadDelay is sleeping too long.
+  - No restart policies with supervision have been added, which should handle issues when nodes or networks give errors.
+  - No timeouts have been used for slow networks.
+  - Not only random numbers are being sent, but there is also an Init message and Shutdown messages.
