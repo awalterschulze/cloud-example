@@ -10,6 +10,7 @@ module Lib
 import GHC.Generics (Generic)
 import Data.Typeable (Typeable)
 import Data.Binary
+import Data.List (sort)
 
 import System.Environment (getArgs)
 import Control.Monad (forM, forM_, when)
@@ -17,6 +18,7 @@ import Control.Monad (forM, forM_, when)
 import Text.Printf (printf)
 import Data.ByteString.Char8 (pack)
 
+import System.Random (RandomGen, random, mkStdGen, StdGen, randoms)
 import Control.Distributed.Process
 import Control.Concurrent (threadDelay)
 import qualified Network.Transport as NT
@@ -36,7 +38,7 @@ data Content = Init {
         ps :: [ProcessId]
     }
     | Number {
-        num :: Int
+        num :: Double
     }
     | DoneFromMaster
     | DoneFromLeader
@@ -59,11 +61,16 @@ setLeaderChan (Shutdown m _) l = Shutdown m (Just l)
 nodes :: [NodeId]
 nodes = map (NodeId . NT.EndPointAddress . pack) ["127.0.0.1:4445:0", "127.0.0.1:4446:0"]
 
-isLeader :: Int -> [ProcessId] -> ProcessId -> Bool
-isLeader n ps p = p == (ps !! n)
+toIndex :: [a] -> Double -> Int
+toIndex ps d = truncate $ d * (fromIntegral $ length ps)
 
-getLeader :: Int -> [ProcessId] -> (ProcessId, [ProcessId])
-getLeader n ps = let (h, t) = splitAt n ps
+isLeader :: Double -> [ProcessId] -> ProcessId -> Bool
+isLeader n ps p = p == (ps !! (toIndex ps n))
+
+getLeader :: Double -> [ProcessId] -> (ProcessId, [ProcessId])
+getLeader n ps = 
+    let index = toIndex ps n
+        (h, t) = splitAt index ps
     in (head t, h ++ tail t)
 
 sendToAll :: Content -> [ProcessId] -> Process [ReceivePort ProcessId]
@@ -85,63 +92,72 @@ sendAndWait msg ps = do
     oneport <- mergePortsBiased ports
     waitForAll oneport ps
 
-initNumberNode :: Process () 
-initNumberNode = do
-    ReplyMsg (Init ps) okChan <- expect
-    mypid <- getSelfPid
-    let leader = isLeader 0 ps mypid
-    say $ printf "process %s received init, I am leader (%s)" (show mypid) (show leader)
-    sendChan okChan mypid
-    when leader (propogateNumber ps 0)
-    numberNode (Shutdown Nothing Nothing) ps
+rand :: [ProcessId] -> ProcessId -> StdGen -> (Double, StdGen)
+rand ps p g = 
+    let (r, g') = random g
+        index = toIndex ps r
+    in if p == (ps !! index)
+        then rand ps p g'
+        else (r, g')
 
-numberNode :: ShutdownState -> [ProcessId] -> Process ()
-numberNode shutdown ps = do
-    mypid <- getSelfPid
+initNumberNode :: Int -> Process () 
+initNumberNode seed = do
+    ReplyMsg msg@(Init ps) okChan <- expect
+    p <- getSelfPid
+    let leader = isLeader 0 ps p
+        g = mkStdGen seed
+    say $ printf "message received: %s <- %s, leader=%s" (show p) (show msg) (show leader)
+    sendChan okChan p
+    g' <- if leader
+        then let (r, g'') = rand ps p g
+             in do 
+                propogateNumber ps r
+                return g''
+        else return g
+    numberNode g' (Shutdown Nothing Nothing) ps
+
+numberNode :: StdGen -> ShutdownState -> [ProcessId] -> Process ()
+numberNode g shutdown ps = do
+    p <- getSelfPid
     ReplyMsg msg okChan <- expect
-    say $ printf "process %s received message %s" (show mypid) (show msg)
+    say $ printf "message received: %s <- %s" (show p) (show msg)
     case msg of
-        (Number n) -> do 
-            let leader = isLeader n ps mypid
-            say $ printf "received number (%d) I am leader (%s)" n (show leader)
-            sendChan okChan mypid
+        (Number r) -> do 
+            let leader = isLeader r ps p
+            say $ printf "%s, leader = %s" (show p) (show leader)
+            sendChan okChan p
             if leader
             then case masterChan shutdown of
                 Nothing -> do
-                    propogateNumber ps n
-                    numberNode shutdown ps
+                    let (r, g') = rand ps p g
+                    propogateNumber ps r
+                    numberNode g' shutdown ps
                 (Just s) -> do
-                    sendChan s mypid
-                    say $ printf "leader %s is starting shutdown" (show mypid)
+                    sendChan s p
+                    say $ printf "leader %s is starting shutdown" (show p)
                     sendAndWait DoneFromLeader ps
-                    say $ printf "leader %s is done" (show mypid)
-            else numberNode shutdown ps
-        DoneFromMaster -> do
-            say $ printf "process %s received done from master" (show mypid)
-            nodeShutdown (setMasterChan shutdown okChan) ps
-        DoneFromLeader -> do
-            say $ printf "process %s received done from leader" (show mypid)
-            nodeShutdown (setLeaderChan shutdown okChan) ps
+                    say $ printf "leader %s is done" (show p)
+            else numberNode g shutdown ps
+        DoneFromMaster -> nodeShutdown g (setMasterChan shutdown okChan) ps
+        DoneFromLeader -> nodeShutdown g (setLeaderChan shutdown okChan) ps
 
-nodeShutdown :: ShutdownState -> [ProcessId] -> Process ()
-nodeShutdown shutdown ps = do
+nodeShutdown :: StdGen -> ShutdownState -> [ProcessId] -> Process ()
+nodeShutdown g shutdown ps = do
     mypid <- getSelfPid
     case shutdown of
         (Shutdown (Just m) (Just l)) -> do
-            say $ printf "process %s shutting down" (show mypid)
+            say $ printf "shutting down: %s" (show mypid)
             sendChan l mypid
             sendChan m mypid
-        _ -> numberNode shutdown ps
+        _ -> numberNode g shutdown ps
 
-propogateNumber :: [ProcessId] -> Int -> Process ()
-propogateNumber ps n = do
+propogateNumber :: [ProcessId] -> Double -> Process ()
+propogateNumber ps r = do
     mypid <- getSelfPid
-    say $ printf "leader %s sending new message" (show mypid)
-    let newNumber = (n + 1) `mod` (length ps)
-        msg = Number newNumber
-        (leader, followers) = getLeader newNumber ps
+    let msg = Number r
+        (leader, followers) = getLeader r ps
         followersWithoutMe = filter (/= mypid) followers
-    say $ printf "leader: %s, followers: %s, followersWithoutMe: %s" (show leader) (show followers) (show followersWithoutMe)
+    say $ printf "sending message: %s -(%s)> %s" (show leader) (show msg) (show followersWithoutMe)
     sendAndWait msg followersWithoutMe
     sendAndWait msg [leader]
 
@@ -150,29 +166,31 @@ remotable ['initNumberNode]
 remoteTable :: RemoteTable -> RemoteTable
 remoteTable = __remoteTable
 
-spawnAll :: [NodeId] -> Process [ProcessId]
-spawnAll peers = forM peers $ \nid -> do
+spawnAll :: [(Int, NodeId)] -> Process [ProcessId]
+spawnAll peers = forM peers $ \(seed, nid) -> do
     say $ printf "spawning on %s" (show nid)
-    spawn nid $(mkStaticClosure 'initNumberNode)
+    spawn nid $ $(mkClosure 'initNumberNode) seed
 
-master :: Backend -> Int -> Int -> Int -> [NodeId] -> Process () 
-master backend sendFor waitFor seed peers = do
-    ps <- spawnAll peers
-
+master :: Backend -> Int -> Int -> StdGen -> [NodeId] -> Process () 
+master backend sendFor waitFor r peers = do
+    let seeds = take (length peers) $ randoms r
+        seeded = zip seeds (sort peers)
+    ps <- spawnAll seeded
+    
     refs <- mapM_ monitor ps
 
     let msg = Init ps
         (leader, followers) = getLeader 0 ps
-    say $ printf "leader: %s, followers: %s" (show leader) (show followers)
+    say $ printf "msater: leader: %s, followers: %s" (show leader) (show followers)
     sendAndWait msg followers
     sendAndWait msg [leader]
 
     liftIO $ threadDelay 1000000
 
-    say "master is starting shutdown"
+    say "master: starting shutdown"
     sendAndWait DoneFromMaster ps
 
-    say "successful shutdown"
+    say $ "master: successful shutdown"
     terminateAllSlaves backend
 
 

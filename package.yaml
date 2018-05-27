@@ -27,6 +27,7 @@ dependencies:
 - network-transport
 - bytestring
 - optparse-applicative
+- random
 
 
 library:

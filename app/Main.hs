@@ -10,6 +10,7 @@ import Control.Concurrent (threadDelay)
 import qualified Network.Transport as NT
 import Control.Distributed.Process.Closure
 import Control.Distributed.Process.Backend.SimpleLocalnet
+import System.Random (mkStdGen)
 
 data Flags = Flags
     { sendFor    :: Int
@@ -55,7 +56,8 @@ main :: IO ()
 main = do 
   flags <- execParser (info (flags <**> helper) fullDesc)
   backend <- initializeBackend (host flags) (port flags) (Lib.remoteTable initRemoteTable)
+  let r = mkStdGen (seed flags)
   print flags
   if master flags
-    then startMaster backend (Lib.master backend (sendFor flags) (waitFor flags) (seed flags))
+    then startMaster backend (Lib.master backend (sendFor flags) (waitFor flags) r)
     else startSlave backend
