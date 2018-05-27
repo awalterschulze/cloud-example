@@ -61,14 +61,17 @@ setLeaderChan (Shutdown m _) l = Shutdown m (Just l)
 nodes :: [NodeId]
 nodes = map (NodeId . NT.EndPointAddress . pack) ["127.0.0.1:4445:0", "127.0.0.1:4446:0"]
 
+-- toIndex converts the randomly generated number double [0,1) to an index in the list.
 toIndex :: [a] -> Double -> Int
-toIndex ps d = truncate $ d * (fromIntegral $ length ps)
+toIndex ps d = truncate $ d * fromIntegral (length ps)
 
-isLeader :: Double -> [ProcessId] -> ProcessId -> Bool
-isLeader n ps p = p == (ps !! (toIndex ps n))
+-- isLeader checks whether the random number is accosiated with the given item in the list.
+isLeader :: (Eq a) => Double -> [a] -> a -> Bool
+isLeader n ps p = p == ps !! toIndex ps n
 
-getLeader :: Double -> [ProcessId] -> (ProcessId, [ProcessId])
-getLeader n ps = 
+-- selectLeader returns the leader by removing it from the list and returning both the leader and the rest of the list.
+selectLeader :: (Eq a) => Double -> [a] -> (a, [a])
+selectLeader n ps = 
     let index = toIndex ps n
         (h, t) = splitAt index ps
     in (head t, h ++ tail t)
@@ -92,6 +95,7 @@ sendAndWait msg ps = do
     oneport <- mergePortsBiased ports
     waitForAll oneport ps
 
+-- rand randomly generates a random number that won't reselect the current node as the leader.
 rand :: [ProcessId] -> ProcessId -> StdGen -> (Double, StdGen)
 rand ps p g = 
     let (r, g') = random g
@@ -108,13 +112,13 @@ initNumberNode seed = do
         g = mkStdGen seed
     say $ printf "message received: %s <- %s, leader=%s" (show p) (show msg) (show leader)
     sendChan okChan p
-    g' <- if leader
-        then let (r, g'') = rand ps p g
-             in do 
-                propogateNumber ps r
-                return g''
-        else return g
-    numberNode g' (Shutdown Nothing Nothing) ps
+    if leader
+        then do 
+            let (r, g') = rand ps p g
+            propogateNumber ps r
+            numberNode g' (Shutdown Nothing Nothing) ps
+        else numberNode g (Shutdown Nothing Nothing) ps
+    
 
 numberNode :: StdGen -> ShutdownState -> [ProcessId] -> Process ()
 numberNode g shutdown ps = do
@@ -155,7 +159,7 @@ propogateNumber :: [ProcessId] -> Double -> Process ()
 propogateNumber ps r = do
     mypid <- getSelfPid
     let msg = Number r
-        (leader, followers) = getLeader r ps
+        (leader, followers) = selectLeader r ps
         followersWithoutMe = filter (/= mypid) followers
     say $ printf "sending message: %s -(%s)> %s" (show leader) (show msg) (show followersWithoutMe)
     sendAndWait msg followersWithoutMe
@@ -173,24 +177,26 @@ spawnAll peers = forM peers $ \(seed, nid) -> do
 
 master :: Backend -> Int -> Int -> StdGen -> [NodeId] -> Process () 
 master backend sendFor waitFor r peers = do
-    let seeds = take (length peers) $ randoms r
+    let sendForSeconds = sendFor * 1000 * 1000
+        waitForSecodds = waitFor * 1000 * 1000
+        seeds = take (length peers) $ randoms r
         seeded = zip seeds (sort peers)
+
     ps <- spawnAll seeded
-    
     refs <- mapM_ monitor ps
 
     let msg = Init ps
-        (leader, followers) = getLeader 0 ps
-    say $ printf "msater: leader: %s, followers: %s" (show leader) (show followers)
+        (leader, followers) = selectLeader 0 ps
+
+    say $ printf "master: leader: %s, followers: %s" (show leader) (show followers)
     sendAndWait msg followers
     sendAndWait msg [leader]
 
-    liftIO $ threadDelay 1000000
+    say "master: init complete"
+    liftIO $ threadDelay sendForSeconds
 
     say "master: starting shutdown"
     sendAndWait DoneFromMaster ps
 
-    say $ "master: successful shutdown"
+    say "master: successful shutdown"
     terminateAllSlaves backend
-
-
