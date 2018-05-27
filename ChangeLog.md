@@ -1,3 +1,3 @@
-# Changelog for iohk-interview
+# Changelog for cloud-example
 
 ## Unreleased changes

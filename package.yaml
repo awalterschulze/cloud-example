@@ -1,6 +1,6 @@
-name:                iohk-interview
+name:                cloud-example
 version:             0.1.0.0
-github:              "awalterschulze/iohk-interview"
+github:              "awalterschulze/cloud-example"
 license:             BSD3
 author:              "Walter Schulze"
 maintainer:          "awalterschulze@gmail.com"
@@ -17,7 +17,7 @@ extra-source-files:
 # To avoid duplicated efforts in documentation and dealing with the
 # complications of embedding Haddock markup inside cabal files, it is
 # common to point users to the README.md file.
-description:         Please see the README on GitHub at <https://github.com/awalterschulze/iohk-interview#readme>
+description:         Please see the README on GitHub at <https://github.com/awalterschulze/cloud-example#readme>
 
 dependencies:
 - base >= 4.7 && < 5
@@ -36,7 +36,7 @@ library:
   source-dirs: src
 
 executables:
-  iohk-interview-exe:
+  cloud-example-exe:
     main:                Main.hs
     source-dirs:         app
     ghc-options:
@@ -44,10 +44,10 @@ executables:
     - -rtsopts
     - -with-rtsopts=-N
     dependencies:
-    - iohk-interview
+    - cloud-example
 
 tests:
-  iohk-interview-test:
+  cloud-example-test:
     main:                Spec.hs
     source-dirs:         test
     ghc-options:
@@ -55,4 +55,4 @@ tests:
     - -rtsopts
     - -with-rtsopts=-N
     dependencies:
-    - iohk-interview
+    - cloud-example
